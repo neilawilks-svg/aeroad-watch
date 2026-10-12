@@ -1,0 +1,46 @@
+name: Canyon size S watcher
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'   # every 5 minutes (GitHub may run it later than this)
+  workflow_dispatch:
+    inputs:
+      test:
+        description: 'Test mode: show sizes and send a test alert'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: canyon-watch
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Check Canyon
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.test }}" = "true" ]; then
+            node canyon-check.js --test
+          else
+            node canyon-check.js
+          fi
+
+      - name: Save what was seen
+        run: |
+          git config user.name "canyon-watch-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add state.json
+          git diff --cached --quiet || (git commit -m "Update watcher state" && git push)
