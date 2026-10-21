@@ -13,7 +13,7 @@ const PRODUCT_URL =
   'https://www.canyon.com/en-gb/outlet-bikes/road-bikes/aeroad-cf-slx-disc-frame-and-brake-kit/4585.html';
 const PRODUCT_ID = '4585';
 const TARGET_SIZE = 'S';
-const COLOURS = ['Fast Lime', 'Solid Silver', 'Dark Grey', 'Pale Green', 'Stealth'];
+const COLOURS = ['Fast Lime', 'Solid Silver', 'Dark Grey', 'Pale Green', 'Stealth', 'Dark Blue'];
 const HEARTBEAT_HOURS = 24;   // daily "still running" ping (also keeps GitHub's timer alive)
 const FAILURES_BEFORE_WARNING = 5;
 
