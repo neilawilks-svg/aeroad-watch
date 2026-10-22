@@ -1,7 +1,8 @@
 // canyon-check.js
-// Runs ONE check of a Canyon outlet product and sends a phone alert (via ntfy)
-// when size S appears in any of your chosen colours. Designed to be run on a
-// timer by GitHub Actions. It remembers what it saw last time in state.json.
+// Runs ONE check of one or more Canyon outlet products and sends a phone alert
+// (via ntfy) when size S appears in any of the colours you're watching.
+// Designed to be run on a timer by GitHub Actions. It remembers what it saw
+// last time in state.json.
 //
 // Needs Node 18+. No packages to install.
 // Local test:  NTFY_TOPIC=your-topic node canyon-check.js --test
@@ -9,17 +10,28 @@
 const fs = require('fs');
 
 // ---------- Settings ----------
-const PRODUCT_URL =
-  'https://www.canyon.com/en-gb/outlet-bikes/road-bikes/aeroad-cf-slx-disc-frame-and-brake-kit/4585.html';
-const PRODUCT_ID = '4585';
+// To watch another product, copy one of the blocks below and change it.
+//   url:     the product page link (without anything after ".html")
+//   id:      the number just before ".html"
+//   colours: the colour names to watch, exactly as Canyon shows them,
+//            or 'any' to watch every colour
+const PRODUCTS = [
+  {
+    label: 'Aeroad frame kit (Shimano 105 Di2)',
+    url: 'https://www.canyon.com/en-gb/outlet-bikes/road-bikes/aeroad-cf-slx-disc-frame-and-brake-kit/4585.html',
+    id: '4585',
+    colours: ['Fast Lime', 'Solid Silver', 'Dark Grey', 'Pale Green', 'Stealth', 'Dark Blue'],
+  },
+  {
+    label: 'Aeroad frame kit (SRAM Rival AXS)',
+    url: 'https://www.canyon.com/en-gb/outlet-bikes/road-bikes/aeroad-cf-slx-disc-frame-and-brake-kit/4586.html',
+    id: '4586',
+    colours: 'any',
+  },
+];
 const TARGET_SIZE = 'S';
-const COLOURS = ['Fast Lime', 'Solid Silver', 'Dark Grey', 'Pale Green', 'Stealth', 'Dark Blue'];
-const HEARTBEAT_HOURS = 24;   // daily "still running" ping (also keeps GitHub's timer alive)
+const HEARTBEAT_HOURS = 24;   // daily "still running" ping
 const FAILURES_BEFORE_WARNING = 5;
-
-// If automatic colour discovery ever stops working, open each colour on the
-// site, copy the address bar link, and paste the links here instead.
-const MANUAL_URLS = [];
 // -------------------------------
 
 const NTFY_TOPIC = process.env.NTFY_TOPIC;
@@ -66,7 +78,10 @@ function toText(html) {
 // Reads the selected colour name and the sizes shown in the size picker.
 function readPage(html) {
   const text = toText(html);
-  const colour = text.match(/Colour:\s*(.+?)\s*Colour:/)?.[1]?.trim();
+  const colour = text
+    .match(/Colour:\s*(.+?)\s*(?:Colour:|Members only|Select frame size)/)?.[1]
+    ?.trim()
+    .slice(0, 40);
 
   const start = text.indexOf('Select frame size');
   const end = text.indexOf('Delivery:', start);
@@ -80,15 +95,22 @@ function readPage(html) {
   return { colour, sizes: [...new Set(sizes)] };
 }
 
-async function findColourUrls() {
-  if (MANUAL_URLS.length) return MANUAL_URLS;
-  const html = await get(PRODUCT_URL);
-  const re = new RegExp(`dwvar_${PRODUCT_ID}_pv_rahmenfarbe=([A-Za-z0-9_]+)`, 'g');
+// Returns a link for every colour of a product. If the page has no colour
+// links (e.g. only one colour), it just checks the product page itself.
+async function findColourUrls(product) {
+  const html = await get(product.url);
+  const re = new RegExp(`dwvar_${product.id}_pv_rahmenfarbe=([A-Za-z0-9_]+)`, 'g');
   const codes = [...new Set([...html.matchAll(re)].map((m) => m[1]))];
-  return codes.map((c) => `${PRODUCT_URL}?dwvar_${PRODUCT_ID}_pv_rahmenfarbe=${c}`);
+  if (!codes.length) return [{ url: product.url, html }];
+  return codes.map((c) => ({ url: `${product.url}?dwvar_${product.id}_pv_rahmenfarbe=${c}` }));
 }
 
-async function notify(title, message, url = PRODUCT_URL, priority = 'high') {
+function isWatched(product, colour) {
+  if (product.colours === 'any') return true;
+  return product.colours.some((c) => c.toLowerCase() === colour.toLowerCase());
+}
+
+async function notify(title, message, url, priority = 'high') {
   const res = await fetch(`https://ntfy.sh/${NTFY_TOPIC}`, {
     method: 'POST',
     body: message,
@@ -97,33 +119,34 @@ async function notify(title, message, url = PRODUCT_URL, priority = 'high') {
   if (!res.ok) throw new Error(`ntfy returned HTTP ${res.status}`);
 }
 
-async function check(state) {
-  const urls = await findColourUrls();
-  if (!urls.length) throw new Error('No colour links found on the page');
-
+async function checkProduct(product, oldHad, newHad) {
+  const pages = await findColourUrls(product);
   const summary = [];
-  for (const url of urls) {
-    await sleep(2000 + Math.random() * 3000);
-    const { colour, sizes } = readPage(await get(url));
-    if (!colour || sizes === null) {
-      throw new Error(`Couldn't read sizes on ${url} (page layout may have changed)`);
-    }
-    summary.push(`${colour}: ${sizes.join(', ') || 'none'}`);
 
-    if (COLOURS.some((c) => c.toLowerCase() === colour.toLowerCase())) {
+  for (const page of pages) {
+    await sleep(2000 + Math.random() * 3000);
+    const html = page.html || (await get(page.url));
+    const { colour, sizes } = readPage(html);
+    if (!colour || sizes === null) {
+      throw new Error(`Couldn't read sizes on ${page.url} (page layout may have changed)`);
+    }
+    summary.push(`  ${colour}: ${sizes.join(', ') || 'none'}`);
+
+    if (isWatched(product, colour)) {
+      const key = `${product.id} ${colour}`;
       const has = sizes.includes(TARGET_SIZE);
-      if (has && !state.hadSize[colour] && !TEST_MODE) {
+      if (has && !oldHad[key] && !TEST_MODE) {
         await notify(
-          `Size ${TARGET_SIZE} available: ${colour}`,
-          `Aeroad CF SLX frame kit in ${colour} is showing size ${TARGET_SIZE}. Tap to open.`,
-          url,
+          `Size ${TARGET_SIZE} available: ${colour} – ${product.label}`,
+          `${product.label} in ${colour} is showing size ${TARGET_SIZE}. Tap to open.`,
+          page.url,
           'urgent'
         );
       }
-      state.hadSize[colour] = has;
+      newHad[key] = has;
     }
   }
-  console.log(summary.join('\n'));
+  console.log(`${product.label}\n${summary.join('\n')}`);
 }
 
 (async () => {
@@ -133,9 +156,13 @@ async function check(state) {
   }
 
   const state = loadState();
+  const newHad = {};
 
   try {
-    await check(state);
+    for (const product of PRODUCTS) {
+      await checkProduct(product, state.hadSize || {}, newHad);
+    }
+    state.hadSize = newHad;
     state.failures = 0;
   } catch (e) {
     state.failures = (state.failures || 0) + 1;
@@ -144,22 +171,26 @@ async function check(state) {
       await notify(
         'Canyon watcher has a problem',
         `${FAILURES_BEFORE_WARNING} checks in a row failed. Last error: ${e.message}`,
-        PRODUCT_URL,
+        PRODUCTS[0].url,
         'default'
       ).catch(() => {});
     }
   }
 
+  const watching = PRODUCTS.map(
+    (p) => `${p.label}: ${p.colours === 'any' ? 'any colour' : p.colours.join(', ')}`
+  ).join('\n');
+
   if (TEST_MODE) {
-    await notify('Canyon watcher test', 'If you can see this, alerts are working.', PRODUCT_URL, 'default');
+    await notify('Canyon watcher test', 'If you can see this, alerts are working.', PRODUCTS[0].url, 'default');
     console.log('Test alert sent. Check your phone.');
   } else if (Date.now() - (state.lastHeartbeat || 0) > HEARTBEAT_HOURS * 3600e3) {
     const first = !state.lastHeartbeat;
     state.lastHeartbeat = Date.now();
     await notify(
       first ? 'Canyon watcher started' : 'Canyon watcher still running',
-      `Checking for size ${TARGET_SIZE} in: ${COLOURS.join(', ')}.`,
-      PRODUCT_URL,
+      `Checking for size ${TARGET_SIZE} in:\n${watching}`,
+      PRODUCTS[0].url,
       'low'
     ).catch(() => {});
   }
